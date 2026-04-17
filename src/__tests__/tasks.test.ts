@@ -113,3 +113,151 @@ describe('POST /tasks', () => {
     expect(res.body.error).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+
+async function createTask(userId: string, assigneeId: string, title = 'Task') {
+  const res = await request(app)
+    .post('/tasks')
+    .set('X-User-Id', userId)
+    .send({ title, assignee_id: assigneeId });
+  return res.body as { id: string; status: string };
+}
+
+describe('PATCH /tasks/:id/status — T-11', () => {
+  it('200 — TODO → IN_PROGRESS', async () => {
+    const task = await createTask(USER_ID, ASSIGNEE_ID);
+    const res = await request(app)
+      .patch(`/tasks/${task.id}/status`)
+      .set('X-User-Id', USER_ID)
+      .send({ status: 'IN_PROGRESS' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('IN_PROGRESS');
+  });
+
+  it('200 — IN_PROGRESS → DONE', async () => {
+    const task = await createTask(USER_ID, ASSIGNEE_ID);
+    await request(app).patch(`/tasks/${task.id}/status`).set('X-User-Id', USER_ID).send({ status: 'IN_PROGRESS' });
+    const res = await request(app)
+      .patch(`/tasks/${task.id}/status`)
+      .set('X-User-Id', USER_ID)
+      .send({ status: 'DONE' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('DONE');
+  });
+
+  it('200 — TODO → CANCELLED', async () => {
+    const task = await createTask(USER_ID, ASSIGNEE_ID);
+    const res = await request(app)
+      .patch(`/tasks/${task.id}/status`)
+      .set('X-User-Id', USER_ID)
+      .send({ status: 'CANCELLED' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('CANCELLED');
+  });
+
+  it('400 — DONE → IN_PROGRESS (backward, terminal)', async () => {
+    const task = await createTask(USER_ID, ASSIGNEE_ID);
+    await request(app).patch(`/tasks/${task.id}/status`).set('X-User-Id', USER_ID).send({ status: 'IN_PROGRESS' });
+    await request(app).patch(`/tasks/${task.id}/status`).set('X-User-Id', USER_ID).send({ status: 'DONE' });
+    const res = await request(app)
+      .patch(`/tasks/${task.id}/status`)
+      .set('X-User-Id', USER_ID)
+      .send({ status: 'IN_PROGRESS' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/terminal/);
+  });
+
+  it('400 — CANCELLED → TODO (terminal)', async () => {
+    const task = await createTask(USER_ID, ASSIGNEE_ID);
+    await request(app).patch(`/tasks/${task.id}/status`).set('X-User-Id', USER_ID).send({ status: 'CANCELLED' });
+    const res = await request(app)
+      .patch(`/tasks/${task.id}/status`)
+      .set('X-User-Id', USER_ID)
+      .send({ status: 'TODO' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/terminal/);
+  });
+
+  it('400 — missing status body', async () => {
+    const task = await createTask(USER_ID, ASSIGNEE_ID);
+    const res = await request(app)
+      .patch(`/tasks/${task.id}/status`)
+      .set('X-User-Id', USER_ID)
+      .send({});
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: 'status is required' });
+  });
+
+  it('404 — task not found', async () => {
+    const res = await request(app)
+      .patch('/tasks/00000000-0000-0000-0000-000000000000/status')
+      .set('X-User-Id', USER_ID)
+      .send({ status: 'IN_PROGRESS' });
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'Task not found' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('GET /tasks — T-13 (role-based)', () => {
+  beforeEach(async () => {
+    // lead creates a task assigned to ASSIGNEE_ID
+    await createTask(USER_ID, ASSIGNEE_ID, 'Lead task');
+    // other user creates a task assigned to OTHER_USER
+    await createTask(OTHER_USER, OTHER_USER, 'Other task');
+  });
+
+  it('200 — lead sees all tasks', async () => {
+    const res = await request(app)
+      .get('/tasks')
+      .set('X-User-Id', USER_ID)
+      .set('X-User-Role', 'lead');
+
+    expect(res.status).toBe(200);
+    expect(res.body.length).toBe(2);
+  });
+
+  it('200 — member sees only own tasks (assignee or creator)', async () => {
+    const res = await request(app)
+      .get('/tasks')
+      .set('X-User-Id', USER_ID)
+      .set('X-User-Role', 'member');
+
+    expect(res.status).toBe(200);
+    // USER_ID is creator of 'Lead task' — should see it
+    expect(res.body.length).toBe(1);
+    expect(res.body[0].title).toBe('Lead task');
+  });
+
+  it('200 — lead filters by status', async () => {
+    const task = await createTask(USER_ID, ASSIGNEE_ID, 'In progress task');
+    await request(app).patch(`/tasks/${task.id}/status`).set('X-User-Id', USER_ID).send({ status: 'IN_PROGRESS' });
+
+    const res = await request(app)
+      .get('/tasks?status=IN_PROGRESS')
+      .set('X-User-Id', USER_ID)
+      .set('X-User-Role', 'lead');
+
+    expect(res.status).toBe(200);
+    expect(res.body.every((t: { status: string }) => t.status === 'IN_PROGRESS')).toBe(true);
+  });
+
+  it('200 — empty array when no matches', async () => {
+    const res = await request(app)
+      .get('/tasks?status=DONE')
+      .set('X-User-Id', USER_ID)
+      .set('X-User-Role', 'lead');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
+  });
+});
