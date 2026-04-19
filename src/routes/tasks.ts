@@ -3,6 +3,8 @@ import pool from '../db';
 
 const router = Router();
 
+const VALID_STATUSES = ['TODO', 'IN_PROGRESS', 'DONE', 'CANCELLED'];
+
 const TRANSITIONS: Record<string, string[]> = {
   TODO: ['IN_PROGRESS', 'CANCELLED'],
   IN_PROGRESS: ['DONE', 'CANCELLED'],
@@ -10,11 +12,13 @@ const TRANSITIONS: Record<string, string[]> = {
   CANCELLED: [],
 };
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 // POST /tasks — Create task
 router.post('/', async (req: Request, res: Response): Promise<void> => {
   const userId = req.headers['x-user-id'] as string | undefined;
   if (!userId) {
-    res.status(401).json({ error: 'Missing X-User-Id header' });
+    res.status(401).json({ error: 'unauthorized' });
     return;
   }
 
@@ -27,6 +31,11 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
 
   if (!assignee_id) {
     res.status(400).json({ error: 'assignee_id is required' });
+    return;
+  }
+
+  if (!UUID_REGEX.test(assignee_id)) {
+    res.status(400).json({ error: 'assignee_id must be a valid UUID' });
     return;
   }
 
@@ -43,10 +52,16 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
   }
 });
 
-// GET /tasks — List with role-based access + filters
+// GET /tasks — Role-based list with optional filters
 router.get('/', async (req: Request, res: Response): Promise<void> => {
   const userId = req.headers['x-user-id'] as string | undefined;
   const userRole = req.headers['x-user-role'] as string | undefined;
+
+  if (!userId) {
+    res.status(401).json({ error: 'unauthorized' });
+    return;
+  }
+
   const { status, assignee_id } = req.query;
 
   const conditions: string[] = [];
@@ -80,14 +95,20 @@ router.get('/', async (req: Request, res: Response): Promise<void> => {
        FROM tasks ${where} ORDER BY created_at DESC`,
       params
     );
-    res.status(200).json(result.rows);
+    res.status(200).json({ tasks: result.rows, total: result.rows.length });
   } catch {
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// PATCH /tasks/:id/status — Enforce transition rules
+// PATCH /tasks/:id/status — Enforce transition rules + 403 authorization
 router.patch('/:id/status', async (req: Request, res: Response): Promise<void> => {
+  const callerId = req.headers['x-user-id'] as string | undefined;
+  if (!callerId) {
+    res.status(401).json({ error: 'unauthorized' });
+    return;
+  }
+
   const { id } = req.params;
   const { status: newStatus } = req.body;
 
@@ -96,25 +117,32 @@ router.patch('/:id/status', async (req: Request, res: Response): Promise<void> =
     return;
   }
 
+  if (!VALID_STATUSES.includes(newStatus)) {
+    res.status(400).json({ error: 'status must be one of: TODO, IN_PROGRESS, DONE, CANCELLED' });
+    return;
+  }
+
   try {
     const taskResult = await pool.query(
-      'SELECT * FROM tasks WHERE id = $1',
+      'SELECT id, status, assignee_id, created_by FROM tasks WHERE id = $1',
       [id]
     );
 
     if (taskResult.rows.length === 0) {
-      res.status(404).json({ error: 'Task not found' });
+      res.status(404).json({ error: 'task not found' });
       return;
     }
 
-    const current = taskResult.rows[0].status as string;
-    const allowed = TRANSITIONS[current] ?? [];
+    const task = taskResult.rows[0];
 
+    if (task.assignee_id !== callerId && task.created_by !== callerId) {
+      res.status(403).json({ error: 'you do not have permission to update this task' });
+      return;
+    }
+
+    const allowed = TRANSITIONS[task.status as string] ?? [];
     if (!allowed.includes(newStatus)) {
-      const valid = allowed.length ? allowed.join(', ') : 'none (terminal status)';
-      res.status(400).json({
-        error: `Invalid status transition from ${current}. Valid transitions: ${valid}`,
-      });
+      res.status(400).json({ error: 'Invalid status transition' });
       return;
     }
 

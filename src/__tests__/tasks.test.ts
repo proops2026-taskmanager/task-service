@@ -195,6 +195,28 @@ describe('PATCH /tasks/:id/status — T-11', () => {
     expect(res.body).toEqual({ error: 'status is required' });
   });
 
+  it('400 — invalid status value (not in enum)', async () => {
+    const task = await createTask(USER_ID, ASSIGNEE_ID);
+    const res = await request(app)
+      .patch(`/tasks/${task.id}/status`)
+      .set('X-User-Id', USER_ID)
+      .send({ status: 'INVALID_STATUS' });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: 'status must be one of: TODO, IN_PROGRESS, DONE, CANCELLED' });
+  });
+
+  it('403 — caller is not assignee or creator', async () => {
+    const task = await createTask(USER_ID, ASSIGNEE_ID);
+    const res = await request(app)
+      .patch(`/tasks/${task.id}/status`)
+      .set('X-User-Id', OTHER_USER)
+      .send({ status: 'IN_PROGRESS' });
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: 'you do not have permission to update this task' });
+  });
+
   it('404 — task not found', async () => {
     const res = await request(app)
       .patch('/tasks/00000000-0000-0000-0000-000000000000/status')
@@ -202,7 +224,7 @@ describe('PATCH /tasks/:id/status — T-11', () => {
       .send({ status: 'IN_PROGRESS' });
 
     expect(res.status).toBe(404);
-    expect(res.body).toEqual({ error: 'Task not found' });
+    expect(res.body).toEqual({ error: 'task not found' });
   });
 });
 
@@ -223,7 +245,8 @@ describe('GET /tasks — T-13 (role-based)', () => {
       .set('X-User-Role', 'lead');
 
     expect(res.status).toBe(200);
-    expect(res.body.length).toBe(2);
+    expect(res.body.tasks.length).toBe(2);
+    expect(res.body.total).toBe(2);
   });
 
   it('200 — member sees only own tasks (assignee or creator)', async () => {
@@ -234,8 +257,9 @@ describe('GET /tasks — T-13 (role-based)', () => {
 
     expect(res.status).toBe(200);
     // USER_ID is creator of 'Lead task' — should see it
-    expect(res.body.length).toBe(1);
-    expect(res.body[0].title).toBe('Lead task');
+    expect(res.body.tasks.length).toBe(1);
+    expect(res.body.tasks[0].title).toBe('Lead task');
+    expect(res.body.total).toBe(1);
   });
 
   it('200 — lead filters by status', async () => {
@@ -248,16 +272,16 @@ describe('GET /tasks — T-13 (role-based)', () => {
       .set('X-User-Role', 'lead');
 
     expect(res.status).toBe(200);
-    expect(res.body.every((t: { status: string }) => t.status === 'IN_PROGRESS')).toBe(true);
+    expect(res.body.tasks.every((t: { status: string }) => t.status === 'IN_PROGRESS')).toBe(true);
   });
 
-  it('200 — empty array when no matches', async () => {
+  it('200 — empty result returns tasks:[] and total:0', async () => {
     const res = await request(app)
       .get('/tasks?status=DONE')
       .set('X-User-Id', USER_ID)
       .set('X-User-Role', 'lead');
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual([]);
+    expect(res.body).toEqual({ tasks: [], total: 0 });
   });
 });
