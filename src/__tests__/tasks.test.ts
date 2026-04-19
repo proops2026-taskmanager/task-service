@@ -5,6 +5,9 @@ import pool from '../db';
 import app from '../app';
 
 beforeAll(async () => {
+  await pool.query('DROP TABLE IF EXISTS comments CASCADE');
+  await pool.query('DROP TABLE IF EXISTS tasks CASCADE');
+  await pool.query('DROP TYPE IF EXISTS task_status CASCADE');
   const migration = readFileSync(
     join(__dirname, '../../db/migrations/001_create_tables.sql'),
     'utf8'
@@ -169,7 +172,7 @@ describe('PATCH /tasks/:id/status — T-11', () => {
       .send({ status: 'IN_PROGRESS' });
 
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/terminal/);
+    expect(res.body.error).toEqual('Invalid status transition');
   });
 
   it('400 — CANCELLED → TODO (terminal)', async () => {
@@ -181,7 +184,7 @@ describe('PATCH /tasks/:id/status — T-11', () => {
       .send({ status: 'TODO' });
 
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/terminal/);
+    expect(res.body.error).toEqual('Invalid status transition');
   });
 
   it('400 — missing status body', async () => {
