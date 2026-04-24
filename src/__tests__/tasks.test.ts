@@ -233,6 +233,157 @@ describe('PATCH /tasks/:id/status — T-11', () => {
 
 // ---------------------------------------------------------------------------
 
+describe('GET /tasks/:id — T-10', () => {
+  it('200 — returns task with empty comments array', async () => {
+    const task = await createTask(USER_ID, ASSIGNEE_ID, 'Detail task');
+    const res = await request(app)
+      .get(`/tasks/${task.id}`)
+      .set('X-User-Id', USER_ID);
+
+    expect(res.status).toBe(200);
+    expect(res.body.id).toBe(task.id);
+    expect(res.body.title).toBe('Detail task');
+    expect(res.body.comments).toEqual([]);
+  });
+
+  it('200 — returns task with comments when they exist', async () => {
+    const task = await createTask(USER_ID, ASSIGNEE_ID, 'Task with comment');
+    await request(app)
+      .post(`/tasks/${task.id}/comments`)
+      .set('X-User-Id', USER_ID)
+      .send({ body: 'First comment' });
+
+    const res = await request(app)
+      .get(`/tasks/${task.id}`)
+      .set('X-User-Id', USER_ID);
+
+    expect(res.status).toBe(200);
+    expect(res.body.comments).toHaveLength(1);
+    expect(res.body.comments[0].body).toBe('First comment');
+    expect(res.body.comments[0].author_id).toBe(USER_ID);
+  });
+
+  it('404 — task not found', async () => {
+    const res = await request(app)
+      .get('/tasks/00000000-0000-0000-0000-000000000000')
+      .set('X-User-Id', USER_ID);
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'task not found' });
+  });
+
+  it('401 — missing X-User-Id', async () => {
+    const task = await createTask(USER_ID, ASSIGNEE_ID);
+    const res = await request(app).get(`/tasks/${task.id}`);
+
+    expect(res.status).toBe(401);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('DELETE /tasks/:id — T-12', () => {
+  it('204 — lead deletes task successfully', async () => {
+    const task = await createTask(USER_ID, ASSIGNEE_ID, 'Task to delete');
+    const res = await request(app)
+      .delete(`/tasks/${task.id}`)
+      .set('X-User-Id', USER_ID)
+      .set('X-User-Role', 'lead');
+
+    expect(res.status).toBe(204);
+  });
+
+  it('404 — task not found', async () => {
+    const res = await request(app)
+      .delete('/tasks/00000000-0000-0000-0000-000000000000')
+      .set('X-User-Id', USER_ID)
+      .set('X-User-Role', 'lead');
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'task not found' });
+  });
+
+  it('403 — member cannot delete task', async () => {
+    const task = await createTask(USER_ID, ASSIGNEE_ID, 'Protected task');
+    const res = await request(app)
+      .delete(`/tasks/${task.id}`)
+      .set('X-User-Id', USER_ID)
+      .set('X-User-Role', 'member');
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: 'only leads can delete tasks' });
+  });
+
+  it('401 — missing X-User-Id', async () => {
+    const task = await createTask(USER_ID, ASSIGNEE_ID);
+    const res = await request(app).delete(`/tasks/${task.id}`);
+
+    expect(res.status).toBe(401);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('POST /tasks/:id/comments — T-13', () => {
+  it('201 — adds comment and returns it', async () => {
+    const task = await createTask(USER_ID, ASSIGNEE_ID, 'Task for comment');
+    const res = await request(app)
+      .post(`/tasks/${task.id}/comments`)
+      .set('X-User-Id', USER_ID)
+      .send({ body: 'Looks good to me' });
+
+    expect(res.status).toBe(201);
+    expect(res.body.body).toBe('Looks good to me');
+    expect(res.body.author_id).toBe(USER_ID);
+    expect(res.body.task_id).toBe(task.id);
+    expect(res.body.id).toBeDefined();
+    expect(res.body.created_at).toBeDefined();
+  });
+
+  it('400 — empty body is rejected', async () => {
+    const task = await createTask(USER_ID, ASSIGNEE_ID);
+    const res = await request(app)
+      .post(`/tasks/${task.id}/comments`)
+      .set('X-User-Id', USER_ID)
+      .send({ body: '   ' });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: 'body is required' });
+  });
+
+  it('400 — missing body field', async () => {
+    const task = await createTask(USER_ID, ASSIGNEE_ID);
+    const res = await request(app)
+      .post(`/tasks/${task.id}/comments`)
+      .set('X-User-Id', USER_ID)
+      .send({});
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: 'body is required' });
+  });
+
+  it('404 — task not found', async () => {
+    const res = await request(app)
+      .post('/tasks/00000000-0000-0000-0000-000000000000/comments')
+      .set('X-User-Id', USER_ID)
+      .send({ body: 'Comment on ghost task' });
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'task not found' });
+  });
+
+  it('401 — missing X-User-Id', async () => {
+    const task = await createTask(USER_ID, ASSIGNEE_ID);
+    const res = await request(app)
+      .post(`/tasks/${task.id}/comments`)
+      .send({ body: 'No auth' });
+
+    expect(res.status).toBe(401);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
 describe('GET /tasks — T-13 (role-based)', () => {
   beforeEach(async () => {
     // lead creates a task assigned to ASSIGNEE_ID

@@ -101,6 +101,107 @@ router.get('/', async (req: Request, res: Response): Promise<void> => {
   }
 });
 
+// GET /tasks/:id — Return task with its comments array
+router.get('/:id', async (req: Request, res: Response): Promise<void> => {
+  const userId = req.headers['x-user-id'] as string | undefined;
+  if (!userId) {
+    res.status(401).json({ error: 'unauthorized' });
+    return;
+  }
+
+  const { id } = req.params;
+
+  try {
+    const taskResult = await pool.query(
+      `SELECT id, title, description, status, assignee_id, created_by, due_date, created_at, updated_at
+       FROM tasks WHERE id = $1`,
+      [id]
+    );
+
+    if (taskResult.rows.length === 0) {
+      res.status(404).json({ error: 'task not found' });
+      return;
+    }
+
+    const commentsResult = await pool.query(
+      `SELECT id, task_id, author_id, body, created_at
+       FROM comments WHERE task_id = $1 ORDER BY created_at ASC`,
+      [id]
+    );
+
+    res.status(200).json({ ...taskResult.rows[0], comments: commentsResult.rows });
+  } catch {
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// DELETE /tasks/:id — Lead only, 204 on success
+router.delete('/:id', async (req: Request, res: Response): Promise<void> => {
+  const userId = req.headers['x-user-id'] as string | undefined;
+  const userRole = req.headers['x-user-role'] as string | undefined;
+
+  if (!userId) {
+    res.status(401).json({ error: 'unauthorized' });
+    return;
+  }
+
+  if (userRole !== 'lead') {
+    res.status(403).json({ error: 'only leads can delete tasks' });
+    return;
+  }
+
+  const { id } = req.params;
+
+  try {
+    const result = await pool.query('DELETE FROM tasks WHERE id = $1 RETURNING id', [id]);
+
+    if (result.rowCount === 0) {
+      res.status(404).json({ error: 'task not found' });
+      return;
+    }
+
+    res.status(204).send();
+  } catch {
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /tasks/:id/comments — Add comment to task
+router.post('/:id/comments', async (req: Request, res: Response): Promise<void> => {
+  const userId = req.headers['x-user-id'] as string | undefined;
+  if (!userId) {
+    res.status(401).json({ error: 'unauthorized' });
+    return;
+  }
+
+  const { id } = req.params;
+  const { body } = req.body;
+
+  if (!body || !body.trim()) {
+    res.status(400).json({ error: 'body is required' });
+    return;
+  }
+
+  try {
+    const taskExists = await pool.query('SELECT id FROM tasks WHERE id = $1', [id]);
+    if (taskExists.rows.length === 0) {
+      res.status(404).json({ error: 'task not found' });
+      return;
+    }
+
+    const result = await pool.query(
+      `INSERT INTO comments (task_id, author_id, body)
+       VALUES ($1, $2, $3)
+       RETURNING id, task_id, author_id, body, created_at`,
+      [id, userId, body.trim()]
+    );
+
+    res.status(201).json(result.rows[0]);
+  } catch {
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // PATCH /tasks/:id/status — Enforce transition rules + 403 authorization
 router.patch('/:id/status', async (req: Request, res: Response): Promise<void> => {
   const callerId = req.headers['x-user-id'] as string | undefined;
