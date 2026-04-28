@@ -124,7 +124,7 @@ router.get('/:id', async (req: Request, res: Response): Promise<void> => {
     }
 
     const commentsResult = await pool.query(
-      `SELECT id, task_id, author_id, body, created_at
+      `SELECT id, task_id, author_id, body AS text, created_at
        FROM comments WHERE task_id = $1 ORDER BY created_at ASC`,
       [id]
     );
@@ -175,9 +175,10 @@ router.post('/:id/comments', async (req: Request, res: Response): Promise<void> 
   }
 
   const { id } = req.params;
-  const { body } = req.body;
+  const { text, body: bodyField } = req.body;
+  const commentText = text || bodyField;
 
-  if (!body || !body.trim()) {
+  if (!commentText || !commentText.trim()) {
     res.status(400).json({ error: 'body is required' });
     return;
   }
@@ -192,8 +193,8 @@ router.post('/:id/comments', async (req: Request, res: Response): Promise<void> 
     const result = await pool.query(
       `INSERT INTO comments (task_id, author_id, body)
        VALUES ($1, $2, $3)
-       RETURNING id, task_id, author_id, body, created_at`,
-      [id, userId, body.trim()]
+       RETURNING id, task_id, author_id, body AS text, created_at`,
+      [id, userId, commentText.trim()]
     );
 
     res.status(201).json(result.rows[0]);
