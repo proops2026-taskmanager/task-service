@@ -12,17 +12,23 @@
   "dependencies": {
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
+    "ioredis": "^5.10.1",
     "morgan": "^1.10.0",
     "pg": "^8.11.5"
   },
   "jest": {
     "preset": "ts-jest",
     "testEnvironment": "node",
-    "setupFiles": ["dotenv/config"],
-    "testMatch": ["**/__tests__/**/*.test.ts"]
+    "setupFiles": [
+      "dotenv/config"
+    ],
+    "testMatch": [
+      "**/__tests__/**/*.test.ts"
+    ]
   },
   "devDependencies": {
     "@types/express": "^4.17.21",
+    "@types/ioredis": "^5.0.0",
     "@types/jest": "^29.5.12",
     "@types/morgan": "^1.9.9",
     "@types/node": "^20.12.7",
