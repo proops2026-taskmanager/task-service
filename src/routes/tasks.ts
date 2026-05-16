@@ -4,12 +4,16 @@ import { publishEvent } from '../events';
 
 const router = Router();
 
+const VALID_STATUSES = ['TODO', 'IN_PROGRESS', 'DONE', 'CANCELLED'];
+
 const VALID_TRANSITIONS: Record<string, string[]> = {
   TODO:        ['IN_PROGRESS', 'CANCELLED'],
   IN_PROGRESS: ['DONE', 'CANCELLED'],
   DONE:        [],
   CANCELLED:   [],
 };
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // GET /tasks — list tasks (role-based)
 router.get('/', async (req: Request, res: Response): Promise<void> => {
@@ -84,6 +88,11 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
   if (!title)       { res.status(400).json({ error: 'title is required' }); return; }
   if (!assignee_id) { res.status(400).json({ error: 'assignee_id is required' }); return; }
 
+  if (!UUID_REGEX.test(assignee_id)) {
+    res.status(400).json({ error: 'assignee_id must be a valid UUID' });
+    return;
+  }
+
   try {
     const result = await pool.query(
       `INSERT INTO tasks (title, description, assignee_id, created_by, due_date)
@@ -117,11 +126,25 @@ router.patch('/:id/status', async (req: Request, res: Response): Promise<void> =
   const { status } = req.body;
   if (!status) { res.status(400).json({ error: 'status is required' }); return; }
 
+  if (!VALID_STATUSES.includes(status)) {
+    res.status(400).json({ error: 'status must be one of: TODO, IN_PROGRESS, DONE, CANCELLED' });
+    return;
+  }
+
   try {
-    const current = await pool.query('SELECT id, title, status FROM tasks WHERE id = $1', [req.params.id]);
+    const current = await pool.query(
+      'SELECT id, title, status, assignee_id, created_by FROM tasks WHERE id = $1',
+      [req.params.id],
+    );
     if (!current.rows.length) { res.status(404).json({ error: 'Task not found' }); return; }
 
-    const task    = current.rows[0];
+    const task = current.rows[0];
+
+    if (task.assignee_id !== userId && task.created_by !== userId) {
+      res.status(403).json({ error: 'you do not have permission to update this task' });
+      return;
+    }
+
     const allowed = VALID_TRANSITIONS[task.status as string] ?? [];
     if (!allowed.includes(status)) {
       res.status(400).json({ error: `Cannot transition from ${task.status} to ${status}` });
