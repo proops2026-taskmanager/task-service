@@ -48,7 +48,7 @@ router.get('/', async (req: Request, res: Response): Promise<void> => {
        FROM tasks ${where} ORDER BY created_at DESC`,
       values,
     );
-    res.json(result.rows);
+    res.json({ tasks: result.rows, total: result.rows.length });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Internal server error' });
@@ -118,153 +118,20 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
   }
 });
 
-// GET /tasks — Role-based list with optional filters
-router.get('/', async (req: Request, res: Response): Promise<void> => {
-  const userId = req.headers['x-user-id'] as string | undefined;
-  const userRole = req.headers['x-user-role'] as string | undefined;
-
-  if (!userId) {
-    res.status(401).json({ error: 'unauthorized' });
-    return;
-  }
-
-  const { status, assignee_id } = req.query;
-
-  const conditions: string[] = [];
-  const params: unknown[] = [];
-  let idx = 1;
-
-  // lead sees all; member sees only tasks they own or are assigned to
-  if (userRole !== 'lead') {
-    conditions.push(`(assignee_id = $${idx} OR created_by = $${idx})`);
-    params.push(userId);
-    idx++;
-  }
-
-  if (status) {
-    conditions.push(`status = $${idx}`);
-    params.push(status);
-    idx++;
-  }
-
-  if (assignee_id) {
-    conditions.push(`assignee_id = $${idx}`);
-    params.push(assignee_id);
-    idx++;
-  }
-
-  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-
-  try {
-    const result = await pool.query(
-      `SELECT id, title, description, status, assignee_id, created_by, due_date, created_at, updated_at
-       FROM tasks ${where} ORDER BY created_at DESC`,
-      params
-    );
-    res.status(200).json({ tasks: result.rows, total: result.rows.length });
-  } catch {
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// GET /tasks/:id — Return task with its comments array
-router.get('/:id', async (req: Request, res: Response): Promise<void> => {
-  const userId = req.headers['x-user-id'] as string | undefined;
-  if (!userId) {
-    res.status(401).json({ error: 'unauthorized' });
-    return;
-  }
-
-  const { id } = req.params;
-
-  try {
-    const taskResult = await pool.query(
-      `SELECT id, title, description, status, assignee_id, created_by, due_date, created_at, updated_at
-       FROM tasks WHERE id = $1`,
-      [id]
-    );
-
-    if (taskResult.rows.length === 0) {
-      res.status(404).json({ error: 'task not found' });
-      return;
-    }
-
-    const commentsResult = await pool.query(
-      `SELECT id, task_id, author_id, body AS text, created_at
-       FROM comments WHERE task_id = $1 ORDER BY created_at ASC`,
-      [id]
-    );
-
-    res.status(200).json({ ...taskResult.rows[0], comments: commentsResult.rows });
-  } catch {
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
 // DELETE /tasks/:id — Lead only, 204 on success
 router.delete('/:id', async (req: Request, res: Response): Promise<void> => {
-  const userId = req.headers['x-user-id'] as string | undefined;
+  const userId   = req.headers['x-user-id']   as string | undefined;
   const userRole = req.headers['x-user-role'] as string | undefined;
 
-  if (!userId) {
-    res.status(401).json({ error: 'unauthorized' });
-    return;
-  }
-
-  if (userRole !== 'lead') {
-    res.status(403).json({ error: 'only leads can delete tasks' });
-    return;
-  }
-
-  const { id } = req.params;
+  if (!userId) { res.status(401).json({ error: 'Missing X-User-Id header' }); return; }
+  if (userRole !== 'lead') { res.status(403).json({ error: 'only leads can delete tasks' }); return; }
 
   try {
-    const result = await pool.query('DELETE FROM tasks WHERE id = $1 RETURNING id', [id]);
-
-    if (result.rowCount === 0) {
-      res.status(404).json({ error: 'task not found' });
-      return;
-    }
-
+    const result = await pool.query('DELETE FROM tasks WHERE id = $1 RETURNING id', [req.params.id]);
+    if (result.rowCount === 0) { res.status(404).json({ error: 'Task not found' }); return; }
     res.status(204).send();
-  } catch {
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// POST /tasks/:id/comments — Add comment to task
-router.post('/:id/comments', async (req: Request, res: Response): Promise<void> => {
-  const userId = req.headers['x-user-id'] as string | undefined;
-  if (!userId) {
-    res.status(401).json({ error: 'unauthorized' });
-    return;
-  }
-
-  const { id } = req.params;
-  const { text, body: bodyField } = req.body;
-  const commentText = text || bodyField;
-
-  if (!commentText || !commentText.trim()) {
-    res.status(400).json({ error: 'body is required' });
-    return;
-  }
-
-  try {
-    const taskExists = await pool.query('SELECT id FROM tasks WHERE id = $1', [id]);
-    if (taskExists.rows.length === 0) {
-      res.status(404).json({ error: 'task not found' });
-      return;
-    }
-
-    const result = await pool.query(
-      `INSERT INTO comments (task_id, author_id, body)
-       VALUES ($1, $2, $3)
-       RETURNING id, task_id, author_id, body AS text, created_at`,
-      [id, userId, commentText.trim()]
-    );
-
-    res.status(201).json(result.rows[0]);
-  } catch {
+  } catch (err) {
+    console.error(err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -329,8 +196,9 @@ router.post('/:id/comments', async (req: Request, res: Response): Promise<void> 
   const userId = req.headers['x-user-id'] as string | undefined;
   if (!userId) { res.status(401).json({ error: 'Missing X-User-Id header' }); return; }
 
-  const { text } = req.body;
-  if (!text?.trim()) { res.status(400).json({ error: 'text is required' }); return; }
+  const { text, body: bodyField } = req.body;
+  const commentText = text || bodyField;
+  if (!commentText?.trim()) { res.status(400).json({ error: 'body is required' }); return; }
 
   try {
     const taskResult = await pool.query('SELECT id, title FROM tasks WHERE id = $1', [req.params.id]);
@@ -340,7 +208,7 @@ router.post('/:id/comments', async (req: Request, res: Response): Promise<void> 
     const comment = await pool.query(
       `INSERT INTO comments (task_id, author_id, body) VALUES ($1, $2, $3)
        RETURNING id, author_id, body AS text, created_at`,
-      [req.params.id, userId, text.trim()],
+      [req.params.id, userId, commentText.trim()],
     );
 
     publishEvent({
@@ -348,7 +216,7 @@ router.post('/:id/comments', async (req: Request, res: Response): Promise<void> 
       task_id:      task.id,
       task_title:   task.title,
       actor_id:     userId,
-      comment_text: text.trim(),
+      comment_text: commentText.trim(),
     });
 
     res.status(201).json(comment.rows[0]);
