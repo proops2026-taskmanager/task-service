@@ -65,10 +65,10 @@ router.get('/:id', async (req: Request, res: Response): Promise<void> => {
        FROM tasks WHERE id = $1`,
       [req.params.id],
     );
-    if (!taskResult.rows.length) { res.status(404).json({ error: 'Task not found' }); return; }
+    if (!taskResult.rows.length) { res.status(404).json({ error: 'task not found' }); return; }
 
     const commentsResult = await pool.query(
-      `SELECT id, author_id, body AS text, created_at FROM comments WHERE task_id = $1 ORDER BY created_at ASC`,
+      `SELECT id, author_id, body, created_at FROM comments WHERE task_id = $1 ORDER BY created_at ASC`,
       [req.params.id],
     );
 
@@ -128,7 +128,7 @@ router.delete('/:id', async (req: Request, res: Response): Promise<void> => {
 
   try {
     const result = await pool.query('DELETE FROM tasks WHERE id = $1 RETURNING id', [req.params.id]);
-    if (result.rowCount === 0) { res.status(404).json({ error: 'Task not found' }); return; }
+    if (result.rowCount === 0) { res.status(404).json({ error: 'task not found' }); return; }
     res.status(204).send();
   } catch (err) {
     console.error(err);
@@ -154,7 +154,7 @@ router.patch('/:id/status', async (req: Request, res: Response): Promise<void> =
       'SELECT id, title, status, assignee_id, created_by FROM tasks WHERE id = $1',
       [req.params.id],
     );
-    if (!current.rows.length) { res.status(404).json({ error: 'Task not found' }); return; }
+    if (!current.rows.length) { res.status(404).json({ error: 'task not found' }); return; }
 
     const task = current.rows[0];
 
@@ -165,7 +165,7 @@ router.patch('/:id/status', async (req: Request, res: Response): Promise<void> =
 
     const allowed = VALID_TRANSITIONS[task.status as string] ?? [];
     if (!allowed.includes(status)) {
-      res.status(400).json({ error: `Cannot transition from ${task.status} to ${status}` });
+      res.status(400).json({ error: 'Invalid status transition' });
       return;
     }
 
@@ -202,12 +202,12 @@ router.post('/:id/comments', async (req: Request, res: Response): Promise<void> 
 
   try {
     const taskResult = await pool.query('SELECT id, title FROM tasks WHERE id = $1', [req.params.id]);
-    if (!taskResult.rows.length) { res.status(404).json({ error: 'Task not found' }); return; }
+    if (!taskResult.rows.length) { res.status(404).json({ error: 'task not found' }); return; }
     const task = taskResult.rows[0];
 
     const comment = await pool.query(
       `INSERT INTO comments (task_id, author_id, body) VALUES ($1, $2, $3)
-       RETURNING id, author_id, body AS text, created_at`,
+       RETURNING id, task_id, author_id, body, created_at`,
       [req.params.id, userId, commentText.trim()],
     );
 
