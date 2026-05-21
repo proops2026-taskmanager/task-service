@@ -439,3 +439,4 @@ describe('GET /tasks — T-13 (role-based)', () => {
     expect(res.body).toEqual({ tasks: [], total: 0 });
   });
 });
+test('deliberate fail', () => { expect(1).toBe(2); });
