@@ -24,7 +24,8 @@
     ],
     "testMatch": [
       "**/__tests__/**/*.test.ts"
-    ]
+    ],
+    "coverageReporters": ["lcov"]
   },
   "devDependencies": {
     "@types/express": "^4.17.21",
