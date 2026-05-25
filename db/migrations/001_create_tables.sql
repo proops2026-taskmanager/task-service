@@ -1,7 +1,10 @@
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
--- Status enum for tasks
-CREATE TYPE task_status AS ENUM ('TODO', 'IN_PROGRESS', 'DONE', 'CANCELLED');
+-- Status enum for tasks (idempotent — silently skips if type already exists)
+DO $$ BEGIN
+  CREATE TYPE task_status AS ENUM ('TODO', 'IN_PROGRESS', 'DONE', 'CANCELLED');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 -- Tasks table
 CREATE TABLE IF NOT EXISTS tasks (
