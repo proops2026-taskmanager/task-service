@@ -1,0 +1,111 @@
+name: CI
+on: [push, pull_request]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - run: npm ci
+      - run: npm run lint
+
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: app_user
+          POSTGRES_PASSWORD: app_pass
+          POSTGRES_DB: tasks_test_db
+        ports:
+          - 5434:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Create test env
+        run: |
+          echo "DATABASE_URL=postgresql://app_user:app_pass@localhost:5434/tasks_test_db" >> .env.test
+          echo "PORT=3002" >> .env.test
+
+      - run: npm ci
+      - run: npm test
+
+  build-image:
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_TOKEN }}
+      - uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ github.sha }}
+            ghcr.io/${{ github.repository }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: [build-image]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: ci-${{ github.run_id }}
+          wait: 120s
+
+      - name: Create stub secrets and configmap
+        run: |
+          kubectl create secret generic task-svc-secret \
+            --from-literal=DATABASE_URL=postgresql://dummy:dummy@localhost:5432/dummy \
+            --from-literal=REDIS_URL=redis://localhost:6379
+          kubectl create configmap task-svc-cm \
+            --from-literal=PORT=3002
+
+      - name: Create GHCR pull secret
+        run: |
+          kubectl create secret docker-registry ghcr-pull-secret \
+            --docker-server=ghcr.io \
+            --docker-username=${{ github.actor }} \
+            --docker-password=${{ secrets.GHCR_TOKEN }}
+
+      - name: Update image tag and apply manifest
+        run: |
+          sed -i "s|image:.*|image: ghcr.io/${{ github.repository }}:${{ github.sha }}|" k8s/deployment.yaml
+          kubectl apply -f k8s/deployment.yaml
+
+      - name: Wait for rollout
+        run: kubectl rollout status deployment/task-service --timeout=180s
+
+      - name: Show running image (evidence)
+        run: |
+          kubectl get pods -o wide
+          kubectl describe pod -l app=task-service | grep -E "Image:|Status:"
