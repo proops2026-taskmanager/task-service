@@ -8,11 +8,17 @@ beforeAll(async () => {
   await pool.query('DROP TABLE IF EXISTS comments CASCADE');
   await pool.query('DROP TABLE IF EXISTS tasks CASCADE');
   await pool.query('DROP TYPE IF EXISTS task_status CASCADE');
+  await pool.query('DROP TYPE IF EXISTS task_priority CASCADE');
   const migration = readFileSync(
     join(__dirname, '../../db/migrations/001_create_tables.sql'),
     'utf8'
   );
   await pool.query(migration);
+  const priorityMigration = readFileSync(
+    join(__dirname, '../../db/migrations/002_add_priority.sql'),
+    'utf8'
+  );
+  await pool.query(priorityMigration);
 });
 
 beforeEach(async () => {
@@ -437,5 +443,149 @@ describe('GET /tasks — T-13 (role-based)', () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ tasks: [], total: 0 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('POST /tasks — priority field', () => {
+  it('201 — defaults to MEDIUM when priority omitted', async () => {
+    const res = await request(app)
+      .post('/tasks')
+      .set('X-User-Id', USER_ID)
+      .send({ title: 'Default priority', assignee_id: ASSIGNEE_ID });
+
+    expect(res.status).toBe(201);
+    expect(res.body.priority).toBe('MEDIUM');
+  });
+
+  it('201 — accepts explicit priority', async () => {
+    const res = await request(app)
+      .post('/tasks')
+      .set('X-User-Id', USER_ID)
+      .send({ title: 'Critical task', assignee_id: ASSIGNEE_ID, priority: 'CRITICAL' });
+
+    expect(res.status).toBe(201);
+    expect(res.body.priority).toBe('CRITICAL');
+  });
+
+  it('400 — invalid priority value', async () => {
+    const res = await request(app)
+      .post('/tasks')
+      .set('X-User-Id', USER_ID)
+      .send({ title: 'Bad priority', assignee_id: ASSIGNEE_ID, priority: 'URGENT' });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: 'priority must be one of: LOW, MEDIUM, HIGH, CRITICAL' });
+  });
+
+  it('200 — GET /tasks includes priority in response', async () => {
+    await request(app)
+      .post('/tasks')
+      .set('X-User-Id', USER_ID)
+      .send({ title: 'High priority task', assignee_id: ASSIGNEE_ID, priority: 'HIGH' });
+
+    const res = await request(app)
+      .get('/tasks')
+      .set('X-User-Id', USER_ID)
+      .set('X-User-Role', 'lead');
+
+    expect(res.status).toBe(200);
+    expect(res.body.tasks[0].priority).toBe('HIGH');
+  });
+
+  it('200 — lead can filter tasks by priority', async () => {
+    await request(app).post('/tasks').set('X-User-Id', USER_ID).send({ title: 'Low', assignee_id: ASSIGNEE_ID, priority: 'LOW' });
+    await request(app).post('/tasks').set('X-User-Id', USER_ID).send({ title: 'Critical', assignee_id: ASSIGNEE_ID, priority: 'CRITICAL' });
+
+    const res = await request(app)
+      .get('/tasks?priority=CRITICAL')
+      .set('X-User-Id', USER_ID)
+      .set('X-User-Role', 'lead');
+
+    expect(res.status).toBe(200);
+    expect(res.body.tasks).toHaveLength(1);
+    expect(res.body.tasks[0].priority).toBe('CRITICAL');
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('PATCH /tasks/:id — full edit', () => {
+  it('200 — creator can update title and priority', async () => {
+    const task = await createTask(USER_ID, ASSIGNEE_ID, 'Original title');
+
+    const res = await request(app)
+      .patch(`/tasks/${task.id}`)
+      .set('X-User-Id', USER_ID)
+      .send({ title: 'Updated title', priority: 'HIGH' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.title).toBe('Updated title');
+    expect(res.body.priority).toBe('HIGH');
+    expect(res.body.status).toBe('TODO');
+  });
+
+  it('200 — assignee can edit the task', async () => {
+    const task = await createTask(USER_ID, ASSIGNEE_ID, 'Assignee task');
+
+    const res = await request(app)
+      .patch(`/tasks/${task.id}`)
+      .set('X-User-Id', ASSIGNEE_ID)
+      .send({ title: 'Assignee updated' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.title).toBe('Assignee updated');
+  });
+
+  it('403 — unrelated user cannot edit task', async () => {
+    const task = await createTask(USER_ID, ASSIGNEE_ID, 'Protected task');
+
+    const res = await request(app)
+      .patch(`/tasks/${task.id}`)
+      .set('X-User-Id', OTHER_USER)
+      .send({ title: 'Hacked' });
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: 'you do not have permission to edit this task' });
+  });
+
+  it('400 — invalid priority', async () => {
+    const task = await createTask(USER_ID, ASSIGNEE_ID, 'Task');
+
+    const res = await request(app)
+      .patch(`/tasks/${task.id}`)
+      .set('X-User-Id', USER_ID)
+      .send({ priority: 'SUPER_URGENT' });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('400 — no fields to update', async () => {
+    const task = await createTask(USER_ID, ASSIGNEE_ID);
+
+    const res = await request(app)
+      .patch(`/tasks/${task.id}`)
+      .set('X-User-Id', USER_ID)
+      .send({});
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: 'no fields to update' });
+  });
+
+  it('404 — task not found', async () => {
+    const res = await request(app)
+      .patch('/tasks/00000000-0000-0000-0000-000000000000')
+      .set('X-User-Id', USER_ID)
+      .send({ title: 'Ghost' });
+
+    expect(res.status).toBe(404);
+  });
+
+  it('401 — missing X-User-Id', async () => {
+    const task = await createTask(USER_ID, ASSIGNEE_ID);
+    const res = await request(app).patch(`/tasks/${task.id}`).send({ title: 'No auth' });
+
+    expect(res.status).toBe(401);
   });
 });
