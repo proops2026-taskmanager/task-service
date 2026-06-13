@@ -5,6 +5,7 @@ import { publishEvent } from '../events';
 const router = Router();
 
 const VALID_STATUSES = ['TODO', 'IN_PROGRESS', 'DONE', 'CANCELLED'];
+const VALID_PRIORITIES = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
 
 const VALID_TRANSITIONS: Record<string, string[]> = {
   TODO:        ['IN_PROGRESS', 'CANCELLED'],
@@ -22,7 +23,7 @@ router.get('/', async (req: Request, res: Response): Promise<void> => {
 
   if (!userId) { res.status(401).json({ error: 'Missing X-User-Id header' }); return; }
 
-  const { status, assignee_id } = req.query;
+  const { status, priority, assignee_id } = req.query;
   const conditions: string[] = [];
   const values: unknown[]    = [];
   let idx = 1;
@@ -35,6 +36,10 @@ router.get('/', async (req: Request, res: Response): Promise<void> => {
     conditions.push(`status = $${idx}::task_status`);
     values.push(status); idx++;
   }
+  if (priority) {
+    conditions.push(`priority = $${idx}::task_priority`);
+    values.push(priority); idx++;
+  }
   if (assignee_id) {
     conditions.push(`assignee_id = $${idx}::uuid`);
     values.push(assignee_id); idx++;
@@ -44,7 +49,7 @@ router.get('/', async (req: Request, res: Response): Promise<void> => {
 
   try {
     const result = await pool.query(
-      `SELECT id, title, description, status, assignee_id, created_by, due_date, created_at, updated_at
+      `SELECT id, title, description, status, priority, assignee_id, created_by, due_date, created_at, updated_at
        FROM tasks ${where} ORDER BY created_at DESC`,
       values,
     );
@@ -61,7 +66,7 @@ router.get('/:id', async (req: Request, res: Response): Promise<void> => {
 
   try {
     const taskResult = await pool.query(
-      `SELECT id, title, description, status, assignee_id, created_by, due_date, created_at, updated_at
+      `SELECT id, title, description, status, priority, assignee_id, created_by, due_date, created_at, updated_at
        FROM tasks WHERE id = $1`,
       [req.params.id],
     );
@@ -84,7 +89,7 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
   const userId = req.headers['x-user-id'] as string | undefined;
   if (!userId) { res.status(401).json({ error: 'Missing X-User-Id header' }); return; }
 
-  const { title, description, assignee_id, due_date } = req.body;
+  const { title, description, assignee_id, due_date, priority } = req.body;
   if (!title)       { res.status(400).json({ error: 'title is required' }); return; }
   if (!assignee_id) { res.status(400).json({ error: 'assignee_id is required' }); return; }
 
@@ -93,12 +98,18 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
+  const resolvedPriority = priority ?? 'MEDIUM';
+  if (!VALID_PRIORITIES.includes(resolvedPriority)) {
+    res.status(400).json({ error: 'priority must be one of: LOW, MEDIUM, HIGH, CRITICAL' });
+    return;
+  }
+
   try {
     const result = await pool.query(
-      `INSERT INTO tasks (title, description, assignee_id, created_by, due_date)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING id, title, description, status, assignee_id, created_by, due_date, created_at, updated_at`,
-      [title, description ?? null, assignee_id, userId, due_date ?? null],
+      `INSERT INTO tasks (title, description, assignee_id, created_by, due_date, priority)
+       VALUES ($1, $2, $3, $4, $5, $6::task_priority)
+       RETURNING id, title, description, status, priority, assignee_id, created_by, due_date, created_at, updated_at`,
+      [title, description ?? null, assignee_id, userId, due_date ?? null, resolvedPriority],
     );
     const task = result.rows[0];
 
@@ -130,6 +141,65 @@ router.delete('/:id', async (req: Request, res: Response): Promise<void> => {
     const result = await pool.query('DELETE FROM tasks WHERE id = $1 RETURNING id', [req.params.id]);
     if (result.rowCount === 0) { res.status(404).json({ error: 'task not found' }); return; }
     res.status(204).send();
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// PATCH /tasks/:id — Edit task fields (title, description, due_date, assignee_id, priority)
+// Only assignee or creator may edit; status changes must use /status sub-route
+router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
+  const userId = req.headers['x-user-id'] as string | undefined;
+  if (!userId) { res.status(401).json({ error: 'Missing X-User-Id header' }); return; }
+
+  const { title, description, due_date, assignee_id, priority } = req.body;
+
+  if (assignee_id !== undefined && !UUID_REGEX.test(assignee_id)) {
+    res.status(400).json({ error: 'assignee_id must be a valid UUID' });
+    return;
+  }
+  if (priority !== undefined && !VALID_PRIORITIES.includes(priority)) {
+    res.status(400).json({ error: 'priority must be one of: LOW, MEDIUM, HIGH, CRITICAL' });
+    return;
+  }
+
+  try {
+    const current = await pool.query(
+      'SELECT id, assignee_id, created_by FROM tasks WHERE id = $1',
+      [req.params.id],
+    );
+    if (!current.rows.length) { res.status(404).json({ error: 'task not found' }); return; }
+
+    const task = current.rows[0];
+    if (task.assignee_id !== userId && task.created_by !== userId) {
+      res.status(403).json({ error: 'you do not have permission to edit this task' });
+      return;
+    }
+
+    const setClauses: string[] = ['updated_at = now()'];
+    const values: unknown[] = [];
+    let idx = 1;
+
+    if (title !== undefined)       { setClauses.push(`title = $${idx++}`);                    values.push(title); }
+    if (description !== undefined) { setClauses.push(`description = $${idx++}`);              values.push(description); }
+    if (due_date !== undefined)    { setClauses.push(`due_date = $${idx++}`);                 values.push(due_date); }
+    if (assignee_id !== undefined) { setClauses.push(`assignee_id = $${idx++}::uuid`);        values.push(assignee_id); }
+    if (priority !== undefined)    { setClauses.push(`priority = $${idx++}::task_priority`);  values.push(priority); }
+
+    if (values.length === 0) {
+      res.status(400).json({ error: 'no fields to update' });
+      return;
+    }
+
+    values.push(req.params.id);
+    const updated = await pool.query(
+      `UPDATE tasks SET ${setClauses.join(', ')} WHERE id = $${idx}
+       RETURNING id, title, description, status, priority, assignee_id, created_by, due_date, created_at, updated_at`,
+      values,
+    );
+
+    res.json(updated.rows[0]);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Internal server error' });
@@ -171,7 +241,7 @@ router.patch('/:id/status', async (req: Request, res: Response): Promise<void> =
 
     const updated = await pool.query(
       `UPDATE tasks SET status = $1::task_status, updated_at = now() WHERE id = $2
-       RETURNING id, title, description, status, assignee_id, created_by, due_date, created_at, updated_at`,
+       RETURNING id, title, description, status, priority, assignee_id, created_by, due_date, created_at, updated_at`,
       [status, req.params.id],
     );
 
