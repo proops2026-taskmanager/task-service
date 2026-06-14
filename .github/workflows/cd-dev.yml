@@ -1,0 +1,155 @@
+name: CD — DEV
+
+# Trigger: push to develop (feature/* merged here via PR).
+# Pipeline: test + build image → create GHCR pull secret → deploy DEV cluster.
+#
+# .env.test is gitignored — CI writes it from hardcoded test values that match
+# the postgres + redis service containers. These are not production credentials.
+#
+# Required GitHub repo settings:
+#   Secrets:   KUBE_CONFIG_DATA = kubeconfig for taskmanager-dev EKS cluster
+#              GHCR_PAT        = GitHub PAT with read:packages (for imagePullSecret on EKS)
+#   Variables: DEV_BASE_URL    = http://<api-gateway-elb-hostname>
+
+on:
+  push:
+    branches: [develop]
+    paths-ignore:
+      - '*.md'
+
+concurrency:
+  group: cd-dev-task
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.set-tag.outputs.tag }}
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: app_user
+          POSTGRES_PASSWORD: app_pass
+          POSTGRES_DB: tasks_db
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Write .env.test
+        run: |
+          cat > .env.test <<'EOF'
+          DATABASE_URL=postgresql://app_user:app_pass@localhost:5432/tasks_db
+          PORT=3002
+          REDIS_URL=redis://localhost:6379
+          EOF
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test -- --coverage
+
+      - id: set-tag
+        run: echo "tag=${{ github.sha }}" >> $GITHUB_OUTPUT
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/proops2026-taskmanager/task-service:${{ steps.set-tag.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  setup-registry:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          printf '%s' "${{ secrets.KUBE_CONFIG_DATA }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Create/update GHCR imagePullSecret
+        run: |
+          kubectl create secret docker-registry ghcr-pull-secret \
+            --docker-server=ghcr.io \
+            --docker-username=${{ github.repository_owner }} \
+            --docker-password=${{ secrets.GHCR_PAT }} \
+            -n default \
+            --save-config \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Patch task-service deployment to use pull secret
+        run: |
+          kubectl patch deployment task-service -n default \
+            -p '{"spec":{"template":{"spec":{"imagePullSecrets":[{"name":"ghcr-pull-secret"}]}}}}'
+
+  deploy:
+    needs: [build, setup-registry]
+    uses: chau11ece/proops2026-cicd-platform/.github/workflows/reusable-deploy.yml@v2
+    secrets:
+      KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
+    with:
+      image-tag: ${{ needs.build.outputs.image-tag }}
+      environment: default
+      project-name: "proops2026-taskmanager"
+      service-name: "task-service"
+
+  smoke:
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify DEV api-gateway is healthy
+        env:
+          BASE_URL: ${{ vars.DEV_BASE_URL }}
+        run: |
+          for i in $(seq 1 12); do
+            STATUS=$(curl -sf -o /dev/null -w "%{http_code}" "${BASE_URL}/health" || echo "000")
+            [ "$STATUS" = "200" ] && echo "DEV reachable" && break
+            echo "Attempt ${i}/12 → ${STATUS}. Waiting 10s..."
+            sleep 10
+            [ "$i" = "12" ] && echo "DEV unreachable after 120s" && exit 1
+          done
