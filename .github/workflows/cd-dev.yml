@@ -10,6 +10,9 @@ name: CD — DEV
 #   Secrets:   KUBE_CONFIG_DATA = kubeconfig for taskmanager-dev EKS cluster
 #              GHCR_PAT        = GitHub PAT with read:packages (for imagePullSecret on EKS)
 #   Variables: DEV_BASE_URL    = http://<api-gateway-elb-hostname>
+#
+# MINIKUBE MODE: setup-registry, deploy, smoke run on self-hosted (Mac).
+# Revert those three jobs to ubuntu-latest + DEV_BASE_URL when back on EKS.
 
 on:
   push:
@@ -101,11 +104,8 @@ jobs:
 
   setup-registry:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: self-hosted  # minikube mode — revert to ubuntu-latest for EKS
     steps:
-      - name: Set up kubectl
-        uses: azure/setup-kubectl@v4
-
       - name: Configure kubeconfig
         run: |
           mkdir -p ~/.kube
@@ -129,7 +129,7 @@ jobs:
 
   deploy:
     needs: [build, setup-registry]
-    uses: chau11ece/proops2026-cicd-platform/.github/workflows/reusable-deploy.yml@v2
+    uses: chau11ece/proops2026-cicd-platform/.github/workflows/reusable-deploy.yml@v3
     secrets:
       KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
     with:
@@ -137,20 +137,27 @@ jobs:
       environment: default
       project-name: "proops2026-taskmanager"
       service-name: "task-service"
+      runner: self-hosted  # minikube mode — revert to ubuntu-latest for EKS
 
   smoke:
     needs: deploy
-    runs-on: ubuntu-latest
+    runs-on: self-hosted  # minikube mode — revert to ubuntu-latest for EKS
     steps:
-      - name: Verify DEV api-gateway is healthy
-        env:
-          BASE_URL: ${{ vars.DEV_BASE_URL }}
+      - name: Configure kubeconfig
         run: |
-          for i in $(seq 1 12); do
-            STATUS=$(curl -sf -o /dev/null -w "%{http_code}" "${BASE_URL}/health" || echo "000")
-            [ "$STATUS" = "200" ] && echo "DEV reachable" && break
-            echo "Attempt ${i}/12 → ${STATUS}. Waiting 10s..."
-            sleep 10
-            [ "$i" = "12" ] && echo "DEV unreachable after 120s" && exit 1
-          done
+          mkdir -p ~/.kube
+          printf '%s' "${{ secrets.KUBE_CONFIG_DATA }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
 
+      - name: Port-forward api-gateway and verify health
+        run: |
+          pkill -f "kubectl port-forward svc/api-gateway" 2>/dev/null || true
+          kubectl port-forward svc/api-gateway 8080:8080 -n default &
+          sleep 5
+          for i in $(seq 1 12); do
+            STATUS=$(curl -sf -o /dev/null -w "%{http_code}" "http://127.0.0.1:8080/health" || echo "000")
+            [ "$STATUS" = "200" ] && echo "api-gateway healthy (minikube)" && exit 0
+            echo "Attempt ${i}/12 -> ${STATUS}. Waiting 10s..."
+            sleep 10
+          done
+          echo "api-gateway unreachable after 120s" && exit 1
