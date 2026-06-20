@@ -105,6 +105,13 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: eu-central-1
+
       - name: Configure kubeconfig
         run: |
           mkdir -p ~/.kube
@@ -131,6 +138,8 @@ jobs:
     uses: chau11ece/proops2026-cicd-platform/.github/workflows/reusable-deploy.yml@v3
     secrets:
       KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
     with:
       image-tag: ${{ needs.build.outputs.image-tag }}
       environment: default
