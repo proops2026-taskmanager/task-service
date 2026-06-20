@@ -11,8 +11,7 @@ name: CD — DEV
 #              GHCR_PAT        = GitHub PAT with read:packages (for imagePullSecret on EKS)
 #   Variables: DEV_BASE_URL    = http://<api-gateway-elb-hostname>
 #
-# MINIKUBE MODE: setup-registry, deploy, smoke run on self-hosted (Mac).
-# Revert those three jobs to ubuntu-latest + DEV_BASE_URL when back on EKS.
+# EKS MODE: all jobs run on ubuntu-latest against the EKS cluster.
 
 on:
   push:
@@ -104,7 +103,7 @@ jobs:
 
   setup-registry:
     needs: build
-    runs-on: self-hosted  # minikube mode — revert to ubuntu-latest for EKS
+    runs-on: ubuntu-latest
     steps:
       - name: Configure kubeconfig
         run: |
@@ -137,26 +136,17 @@ jobs:
       environment: default
       project-name: "proops2026-taskmanager"
       service-name: "task-service"
-      runner: self-hosted  # minikube mode — revert to ubuntu-latest for EKS
+      runner: ubuntu-latest
 
   smoke:
     needs: deploy
-    runs-on: self-hosted  # minikube mode — revert to ubuntu-latest for EKS
+    runs-on: ubuntu-latest
     steps:
-      - name: Configure kubeconfig
+      - name: Verify api-gateway health via ELB
         run: |
-          mkdir -p ~/.kube
-          printf '%s' "${{ secrets.KUBE_CONFIG_DATA }}" | base64 -d > ~/.kube/config
-          chmod 600 ~/.kube/config
-
-      - name: Port-forward api-gateway and verify health
-        run: |
-          pkill -f "kubectl port-forward svc/api-gateway" 2>/dev/null || true
-          kubectl port-forward svc/api-gateway 8080:8080 -n default &
-          sleep 5
           for i in $(seq 1 12); do
-            STATUS=$(curl -sf -o /dev/null -w "%{http_code}" "http://127.0.0.1:8080/health" || echo "000")
-            [ "$STATUS" = "200" ] && echo "api-gateway healthy (minikube)" && exit 0
+            STATUS=$(curl -sf -o /dev/null -w "%{http_code}" "${{ vars.DEV_BASE_URL }}/health" || echo "000")
+            [ "$STATUS" = "200" ] && echo "api-gateway healthy" && exit 0
             echo "Attempt ${i}/12 -> ${STATUS}. Waiting 10s..."
             sleep 10
           done
