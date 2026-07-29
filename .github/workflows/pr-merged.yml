@@ -1,0 +1,69 @@
+name: PR Merged — App CI + Push
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'iac/**'
+      - '**/Jenkinsfile'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    uses: proops2026-taskmanager/proops2026-cicd-platform/.github/workflows/reusable-build.yml@v3
+    with:
+      project-name: "proops2026-taskmanager"
+      service-name: "task-service"
+      db-name: "tasks_test_db"
+      service-port: "3002"
+      extra-env: |
+        REDIS_URL=redis://localhost:6379
+    secrets:
+      GHCR_PAT: ${{ secrets.GHCR_PAT }}
+
+  deploy-dev:
+    needs: build
+    uses: proops2026-taskmanager/proops2026-cicd-platform/.github/workflows/reusable-deploy.yml@v3
+    with:
+      image-tag: ${{ needs.build.outputs.image-tag }}
+      environment: dev
+      project-name: "proops2026-taskmanager"
+      service-name: "task-service"
+      secret-name: "task-svc-secret"
+      secret-literals: >-
+        --from-literal=DATABASE_URL=postgresql://dummy:dummy@localhost:5432/dummy
+        --from-literal=REDIS_URL=redis://localhost:6379
+    secrets:
+      GHCR_PAT: ${{ secrets.GHCR_PAT }}
+
+  deploy-staging:
+    needs: [build, deploy-dev]   # gated by dev — same image-tag, no rebuild
+    uses: proops2026-taskmanager/proops2026-cicd-platform/.github/workflows/reusable-deploy.yml@v3
+    with:
+      image-tag: ${{ needs.build.outputs.image-tag }}
+      environment: staging
+      project-name: "proops2026-taskmanager"
+      service-name: "task-service"
+      secret-name: "task-svc-secret"
+      secret-literals: >-
+        --from-literal=DATABASE_URL=postgresql://dummy:dummy@localhost:5432/dummy
+        --from-literal=REDIS_URL=redis://localhost:6379
+    secrets:
+      GHCR_PAT: ${{ secrets.GHCR_PAT }}
+
+  deploy-prod:
+    needs: [build, deploy-staging]   # gated by staging — same image-tag, no rebuild
+    uses: proops2026-taskmanager/proops2026-cicd-platform/.github/workflows/reusable-deploy.yml@v3
+    with:
+      image-tag: ${{ needs.build.outputs.image-tag }}
+      environment: prod   # required reviewers on this GitHub Environment pause the run for approval
+      project-name: "proops2026-taskmanager"
+      service-name: "task-service"
+      secret-name: "task-svc-secret"
+      secret-literals: >-
+        --from-literal=DATABASE_URL=postgresql://dummy:dummy@localhost:5432/dummy
+        --from-literal=REDIS_URL=redis://localhost:6379
+    secrets:
+      GHCR_PAT: ${{ secrets.GHCR_PAT }}
