@@ -9,7 +9,7 @@ on:
 
 jobs:
   app-ci:
-    uses: proops2026-taskmanager/proops2026-cicd-platform/.github/workflows/reusable-app-ci.yml@v3
+    uses: proops2026-taskmanager/proops2026-cicd-platform/.github/workflows/reusable-app-ci.yml@v3.1
     with:
       runtime-version: "20"
       project-name: "proops2026-taskmanager"

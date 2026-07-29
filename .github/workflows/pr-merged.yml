@@ -9,10 +9,11 @@ on:
 permissions:
   contents: read
   packages: write
+  security-events: write
 
 jobs:
   build:
-    uses: proops2026-taskmanager/proops2026-cicd-platform/.github/workflows/reusable-build.yml@v3
+    uses: proops2026-taskmanager/proops2026-cicd-platform/.github/workflows/reusable-build.yml@v3.1
     with:
       project-name: "proops2026-taskmanager"
       service-name: "task-service"
