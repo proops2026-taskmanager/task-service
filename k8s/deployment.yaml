@@ -1,8 +1,9 @@
+# CI-only manifest — applied by reusable-deploy.yml into an ephemeral kind cluster
+# on every merge to main. Image tag is patched post-apply via `kubectl set image`.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: task-service
-  namespace: default
 spec:
   replicas: 1
   selector:
@@ -46,3 +47,9 @@ spec:
               port: 3002
             initialDelaySeconds: 15
             periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3002
+            initialDelaySeconds: 5
+            periodSeconds: 5
